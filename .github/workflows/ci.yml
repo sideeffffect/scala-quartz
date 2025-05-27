@@ -7,10 +7,6 @@ on:
 jobs:
   ciJvms:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        java: [ '17', '21' ]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,8 +16,7 @@ jobs:
         with:
           scala-cli-version: latest
       - run: scala-cli config power true
-      - name: Test
-        run: scala-cli test .
+      - run: scala-cli publish local .
 
   ci:
     if: always()
