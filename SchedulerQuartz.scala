@@ -95,6 +95,7 @@ object SchedulerQuartz {
   private val instanceNameKey = "org.quartz.scheduler.instanceName"
 
   private def defaultQuartzConfig = Map(
+    "org.quartz.scheduler.instanceName" -> "SchedulerQuartz",
     "org.quartz.scheduler.instanceId" -> "AUTO",
     //    "org.quartz.scheduler.wrapJobExecutionInUserTransaction" -> "false",
 
@@ -134,12 +135,9 @@ object SchedulerQuartz {
     dispatcher <- Dispatcher.parallel[F](await = true)
     _ <- dbInitScriptName.traverse(dbInit(transactor)).toResource
 
-    instanceName <- Sync[F].realTimeInstant.map(i => s"SchedulerQuartz${i.toEpochMilli}").toResource
-    dataSourceValue = s"${instanceName}DS"
-    quartzConfig = defaultQuartzConfig ++ customQuartzConfig ++ Map(
-      dataSourceKey -> dataSourceValue,
-      instanceNameKey -> instanceName,
-    )
+    quartzConfig0 = defaultQuartzConfig ++ customQuartzConfig
+    dataSourceValue = s"${quartzConfig0(instanceNameKey)}DS"
+    quartzConfig = quartzConfig0 ++ Map(dataSourceKey -> dataSourceValue)
 
     scheduler <- Resource[F, SchedulerQuartz[A, F]](Sync[F].blocking {
       DBConnectionManager
