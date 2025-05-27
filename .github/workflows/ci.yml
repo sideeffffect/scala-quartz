@@ -19,6 +19,7 @@ jobs:
         uses: VirtusLab/scala-cli-setup@v1
         with:
           scala-cli-version: latest
+      - run: scala-cli config power true
       - name: Test
         run: scala-cli test .
 
