@@ -7,5 +7,5 @@
 //> using publish.computeVersion git:dynver
 //> using publish.url https://github.com/sideeffffect/scala-quartz/
 //> using publish.license Apache-2.0
-//> using publish.developer "Ondra Pelech| |https://github.com/sideeffffect/scala-quartz/"
+//> using publish.developer "sideeffffect|Ondra Pelech|https://github.com/sideeffffect/"
 //> using publish.repository central-s01
