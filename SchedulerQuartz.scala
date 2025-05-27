@@ -73,7 +73,7 @@ private class SchedulerQuartz[A: Encoder: Decoder, F[_]: Sync](
       .pipe(configure)
       .build()
     if (underlying.checkExists(jobKey)) {
-      underlying.deleteJob(jobKey)
+      val _ = underlying.deleteJob(jobKey)
     }
     underlying.scheduleJob(jobDetail, trigger)
   }
