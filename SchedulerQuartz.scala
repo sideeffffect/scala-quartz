@@ -118,8 +118,8 @@ object SchedulerQuartz {
     "org.quartz.jobStore.misfireThreshold" -> "60000",
   )
 
-  private def dbInit[F[_]: Sync, DS <: DataSource](
-      transactor: Transactor.Aux[F, DS],
+  private def dbInit[F[_]: Sync](
+      transactor: Transactor.Aux[F, DataSource],
   )(dbInitScriptName: String): F[Unit] = for {
     dbInitScript <- Sync[F].blocking(
       getClass
@@ -131,8 +131,8 @@ object SchedulerQuartz {
     _ <- dbInitScript.updateWithLabel("SchedulerQuartzDbInit").run.transact(transactor)
   } yield ()
 
-  private def isDbInitialized[F[_]: MonadCancelThrow, DS <: DataSource](
-      transactor: Transactor.Aux[F, DS],
+  private def isDbInitialized[F[_]: MonadCancelThrow](
+      transactor: Transactor.Aux[F, DataSource],
       prefix: String,
       schema: String = "public",
   ): F[Boolean] = sql"""
@@ -143,8 +143,8 @@ object SchedulerQuartz {
     )
   """.query[Boolean].unique.transact(transactor)
 
-  def make[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
-      transactor: Transactor.Aux[F, DS],
+  def make[A: Encoder: Decoder, F[_]: Async, G[_]: Sync](
+      transactor: Transactor.Aux[F, DataSource],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
   )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, G]] = for {
