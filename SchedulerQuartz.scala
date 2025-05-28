@@ -117,7 +117,9 @@ object SchedulerQuartz {
     "org.quartz.jobStore.misfireThreshold" -> "60000",
   )
 
-  private def dbInit[F[_]: Sync](transactor: Transactor.Aux[F, DataSource])(dbInitScriptName: String): F[Unit] = for {
+  private def dbInit[F[_]: Sync, DS <: DataSource](
+      transactor: Transactor.Aux[F, DS],
+  )(dbInitScriptName: String): F[Unit] = for {
     dbInitScript <- Sync[F].blocking(
       getClass
         .getResourceAsStream(s"/org/quartz/impl/jdbcjobstore/$dbInitScriptName")
@@ -128,8 +130,8 @@ object SchedulerQuartz {
     _ <- dbInitScript.updateWithLabel("SchedulerQuartzDbInit").run.transact(transactor)
   } yield ()
 
-  private def isDbInitialized[F[_]: MonadCancelThrow](
-      transactor: Transactor.Aux[F, DataSource],
+  private def isDbInitialized[F[_]: MonadCancelThrow, DS <: DataSource](
+      transactor: Transactor.Aux[F, DS],
       prefix: String,
       schema: String = "public",
   ): F[Boolean] = sql"""
@@ -140,8 +142,8 @@ object SchedulerQuartz {
     )
   """.query[Boolean].unique.transact(transactor)
 
-  def make[A: Encoder: Decoder, F[_]: Async](
-      transactor: Transactor.Aux[F, DataSource],
+  def make[A: Encoder: Decoder, F[_]: Async, DS <: DataSource](
+      transactor: Transactor.Aux[F, DS],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
   )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, F]] = for {
