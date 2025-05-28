@@ -2,7 +2,7 @@ package com.github.sideeffffect.quartz
 
 import cats.effect.std.Dispatcher
 import cats.effect.syntax.all._
-import cats.effect.{Async, Resource, Sync}
+import cats.effect.{Async, MonadCancelThrow, Resource, Sync}
 import cats.syntax.all._
 import com.github.sideeffffect.quartz.SchedulerQuartz._
 import doobie.implicits._
@@ -31,12 +31,12 @@ private class SchedulerQuartz[A: Encoder: Decoder, F[_]: Sync](
 ) extends com.github.sideeffffect.quartz.Scheduler[A, F]
     with Job {
 
-  override def execute(context: JobExecutionContext): Unit = dispatcher.unsafeRunSync {
-    for {
-      jobData <- decode[A](context.getJobDetail.getJobDataMap.getString(jobDataMapKey)).liftTo[F]
-      _ <- action(jobData)
-    } yield ()
-  }
+  def executeF(context: JobExecutionContext): F[Unit] = for {
+    jobData <- decode[A](context.getJobDetail.getJobDataMap.getString(jobDataMapKey)).liftTo[F]
+    _ <- action(jobData)
+  } yield ()
+
+  override def execute(context: JobExecutionContext): Unit = dispatcher.unsafeRunSync(executeF(context))
 
   override def scheduleJob(name: String, group: String, jobData: A, cronExpression: String): F[Unit] = scheduleJob(
     name,
@@ -93,9 +93,10 @@ object SchedulerQuartz {
 
   private val dataSourceKey = "org.quartz.jobStore.dataSource"
   private val instanceNameKey = "org.quartz.scheduler.instanceName"
+  private val tablePrefixKey = "org.quartz.jobStore.tablePrefix"
 
-  private def defaultQuartzConfig = Map(
-    "org.quartz.scheduler.instanceName" -> "SchedulerQuartz",
+  private val defaultQuartzConfig = Map(
+    instanceNameKey -> "SchedulerQuartz",
     "org.quartz.scheduler.instanceId" -> "AUTO",
     //    "org.quartz.scheduler.wrapJobExecutionInUserTransaction" -> "false",
 
@@ -108,7 +109,7 @@ object SchedulerQuartz {
     "org.quartz.jobStore.class" -> "org.quartz.impl.jdbcjobstore.JobStoreTX",
     "org.quartz.jobStore.driverDelegateClass" -> "org.quartz.impl.jdbcjobstore.PostgreSQLDelegate",
     "org.quartz.jobStore.useProperties" -> "true", // Still useful for other JobStore props
-    "org.quartz.jobStore.tablePrefix" -> "QRTZ_",
+    tablePrefixKey -> "QRTZ_",
 
     // Clustering Configuration
     "org.quartz.jobStore.isClustered" -> "true",
@@ -127,17 +128,31 @@ object SchedulerQuartz {
     _ <- dbInitScript.updateWithLabel("SchedulerQuartzDbInit").run.transact(transactor)
   } yield ()
 
+  private def isDbInitialized[F[_]: MonadCancelThrow](
+      transactor: Transactor.Aux[F, DataSource],
+      prefix: String,
+      schema: String = "public",
+  ): F[Boolean] = sql"""
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = $schema AND table_name LIKE ${prefix + "%"}
+    )
+  """.query[Boolean].unique.transact(transactor)
+
   def make[A: Encoder: Decoder, F[_]: Async](
       transactor: Transactor.Aux[F, DataSource],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
   )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, F]] = for {
     dispatcher <- Dispatcher.parallel[F](await = true)
-    _ <- dbInitScriptName.traverse(dbInit(transactor)).toResource
 
     quartzConfig0 = defaultQuartzConfig ++ customQuartzConfig
     dataSourceValue = s"${quartzConfig0(instanceNameKey)}DS"
     quartzConfig = quartzConfig0 ++ Map(dataSourceKey -> dataSourceValue)
+
+    dbIsInitialized <- isDbInitialized(transactor, quartzConfig(tablePrefixKey)).toResource
+    _ <- Async[F].unlessA(dbIsInitialized)(dbInitScriptName.traverse(dbInit(transactor))).toResource
 
     scheduler <- Resource[F, SchedulerQuartz[A, F]](Sync[F].blocking {
       DBConnectionManager
