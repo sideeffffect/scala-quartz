@@ -143,7 +143,14 @@ object SchedulerQuartz {
     )
   """.query[Boolean].unique.transact(transactor)
 
-  def make[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
+  def make[A: Encoder: Decoder, DS <: DataSource, F[_]: Async](
+      transactor: Transactor.Aux[F, DS],
+      dbInitScriptName: Option[String] = None,
+      customQuartzConfig: Map[String, String] = Map(),
+  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, F]] =
+    `makeFor🤡s`(transactor, dbInitScriptName, customQuartzConfig)(action)
+
+  def `makeFor🤡s`[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
       transactor: Transactor.Aux[F, DS],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
