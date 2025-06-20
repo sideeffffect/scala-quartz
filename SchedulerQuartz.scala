@@ -29,7 +29,7 @@ private class SchedulerQuartz[A: Encoder: Decoder, F[_]: MonadThrow, G[_]: Sync]
     underlying: org.quartz.Scheduler,
     action: A => F[Unit],
     dispatcher: Dispatcher[F],
-) extends com.github.sideeffffect.quartz.Scheduler[A, G]
+) extends com.github.sideeffffect.quartz.SchedulerCustom[A, G]
     with Job {
 
   def executeF(context: JobExecutionContext): F[Unit] = for {
@@ -37,55 +37,64 @@ private class SchedulerQuartz[A: Encoder: Decoder, F[_]: MonadThrow, G[_]: Sync]
     _ <- action(jobData)
   } yield ()
 
-  override def execute(context: JobExecutionContext): Unit = dispatcher.unsafeRunSync(executeF(context))
+  override def execute(context: JobExecutionContext): Unit = dispatcher.unsafeRunAndForget(executeF(context))
 
-  override def scheduleJob(name: String, group: String, jobData: A, cronExpression: String): G[Unit] = scheduleJob(
-    name,
-    group,
-    jobData,
-    _.withSchedule(CronScheduleBuilder.cronSchedule(cronExpression).withMisfireHandlingInstructionFireAndProceed),
-  ).void
+  override def scheduleJob(trigger: Trigger): G[Instant] = Sync[G].interruptible {
+    underlying.scheduleJob(trigger).toInstant
+  }
 
-  override def scheduleJob(name: String, group: String, jobData: A, instant: Instant): G[Unit] = scheduleJob(
-    name,
-    group,
-    jobData,
-    _.startAt(java.util.Date.from(instant))
-      .withSchedule(SimpleScheduleBuilder.simpleSchedule.withMisfireHandlingInstructionFireNow),
-  ).void
+  override def scheduleJob(jobDetail: JobDetail, trigger: Trigger): G[Instant] = Sync[G].interruptible {
+    underlying.scheduleJob(jobDetail, trigger).toInstant
+  }
 
-  def scheduleJob(
-      name: String,
-      group: String,
+  override def checkExists(jobKey: JobKey): G[Boolean] = Sync[G].interruptible {
+    underlying.checkExists(jobKey)
+  }
+
+  override def deleteJob(jobKey: JobKey): G[Boolean] = Sync[G].interruptible {
+    underlying.deleteJob(jobKey)
+  }
+
+  override def scheduleJobCustom(jobKey: JobKey, jobData: A, cronExpression: CronExpression): G[Unit] =
+    scheduleJobCustom(
+      jobKey,
+      jobData,
+      _.withSchedule(CronScheduleBuilder.cronSchedule(cronExpression).withMisfireHandlingInstructionFireAndProceed),
+    ).void
+
+  override def scheduleJobCustom(jobKey: JobKey, jobData: A, instant: Instant): G[Unit] =
+    scheduleJobCustom(
+      jobKey,
+      jobData,
+      _.startAt(java.util.Date.from(instant))
+        .withSchedule(SimpleScheduleBuilder.simpleSchedule.withMisfireHandlingInstructionFireNow),
+    ).void
+
+  override def scheduleJobCustom(
+      jobKey: JobKey,
       jobData: A,
       configure: TriggerBuilder[Trigger] => TriggerBuilder[? <: Trigger],
-  ): G[java.util.Date] = Sync[G].blocking {
-    val jobKey = JobKey.jobKey(name, group)
-    val jobDetail = JobBuilder
-      .newJob(classOf[SchedulerQuartz[A, F, G]])
-      .withIdentity(jobKey)
-      .usingJobData(jobDataMapKey, jobData.asJson.spaces2SortKeys)
-      .requestRecovery(true)
-      .build()
-    val trigger = TriggerBuilder
-      .newTrigger()
-      .withIdentity(name, group)
-      .forJob(jobDetail)
-      .pipe(configure)
-      .build()
-    if (underlying.checkExists(jobKey)) {
-      val _ = underlying.deleteJob(jobKey)
+  ): G[Instant] = for {
+    jobDetail <- Sync[G].blocking {
+      JobBuilder
+        .newJob(classOf[SchedulerQuartz[A, F, G]])
+        .withIdentity(jobKey)
+        .usingJobData(jobDataMapKey, jobData.asJson.spaces2SortKeys)
+        .requestRecovery(true)
+        .build()
     }
-    underlying.scheduleJob(jobDetail, trigger)
-  }
-
-  override def checkExists(name: String, group: String): G[Boolean] = Sync[G].blocking {
-    underlying.checkExists(JobKey.jobKey(name, group))
-  }
-
-  override def deleteJob(name: String, group: String): G[Boolean] = Sync[G].blocking {
-    underlying.deleteJob(JobKey.jobKey(name, group))
-  }
+    trigger <- Sync[G].blocking {
+      TriggerBuilder
+        .newTrigger()
+        .withIdentity(TriggerKey.triggerKey(jobKey.getName, jobKey.getGroup))
+        .forJob(jobDetail)
+        .pipe(configure)
+        .build()
+    }
+    exists <- checkExists(jobKey)
+    _ <- Sync[G].whenA(exists)(deleteJob(jobKey))
+    result <- scheduleJob(jobDetail, trigger)
+  } yield result
 }
 
 object SchedulerQuartz {
@@ -99,23 +108,20 @@ object SchedulerQuartz {
   private val defaultQuartzConfig = Map(
     instanceNameKey -> "SchedulerQuartz",
     "org.quartz.scheduler.instanceId" -> "AUTO",
-    //    "org.quartz.scheduler.wrapJobExecutionInUserTransaction" -> "false",
 
     // ThreadPool Configuration
     "org.quartz.threadPool.class" -> "org.quartz.simpl.SimpleThreadPool",
-    "org.quartz.threadPool.threadCount" -> "10",
+    "org.quartz.threadPool.threadCount" -> "1", // because we're using unsafeRunAndForget to run the tasks
     "org.quartz.threadPool.threadPriority" -> Thread.NORM_PRIORITY.toString,
 
     // JobStore Configuration (JDBC for clustering)
     "org.quartz.jobStore.class" -> "org.quartz.impl.jdbcjobstore.JobStoreTX",
     "org.quartz.jobStore.driverDelegateClass" -> "org.quartz.impl.jdbcjobstore.PostgreSQLDelegate",
-    "org.quartz.jobStore.useProperties" -> "true", // Still useful for other JobStore props
+    "org.quartz.jobStore.useProperties" -> "true",
     tablePrefixKey -> "QRTZ_",
 
     // Clustering Configuration
     "org.quartz.jobStore.isClustered" -> "true",
-    "org.quartz.jobStore.clusterCheckinInterval" -> "20000",
-    "org.quartz.jobStore.misfireThreshold" -> "60000",
   )
 
   private def dbInit[F[_]: Sync, DS <: DataSource](
@@ -147,14 +153,14 @@ object SchedulerQuartz {
       transactor: Transactor.Aux[F, DS],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
-  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, F]] =
+  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.SchedulerCustom[A, F]] =
     `makeFor🤡s`(transactor, dbInitScriptName, customQuartzConfig)(action)
 
   def `makeFor🤡s`[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
       transactor: Transactor.Aux[F, DS],
       dbInitScriptName: Option[String] = None,
       customQuartzConfig: Map[String, String] = Map(),
-  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.Scheduler[A, G]] = for {
+  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.SchedulerCustom[A, G]] = for {
     dispatcher <- Dispatcher.parallel[F](await = true)
 
     quartzConfig0 = defaultQuartzConfig ++ customQuartzConfig
@@ -164,7 +170,7 @@ object SchedulerQuartz {
     dbIsInitialized <- isDbInitialized(transactor, quartzConfig(tablePrefixKey)).toResource
     _ <- Async[F].unlessA(dbIsInitialized)(dbInitScriptName.traverse(dbInit(transactor))).toResource
 
-    scheduler <- Resource[F, SchedulerQuartz[A, F, G]](Sync[F].blocking {
+    scheduler <- Resource[F, SchedulerQuartz[A, F, G]](Sync[F].interruptible {
       DBConnectionManager
         .getInstance()
         .addConnectionProvider(
@@ -184,7 +190,7 @@ object SchedulerQuartz {
       scheduler.start()
       (
         schedulerQuartz,
-        Sync[F].blocking(scheduler.shutdown(true)),
+        Sync[F].interruptible(scheduler.shutdown(true)),
       )
     })
   } yield scheduler
