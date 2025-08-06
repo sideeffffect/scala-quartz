@@ -156,6 +156,14 @@ object SchedulerQuartz {
   )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.SchedulerCustom[A, F]] =
     `makeFor🤡s`(transactor, dbInitScriptName, customQuartzConfig)(action)
 
+  /** The same as `makeFor🤡s`, but without the warmth of the clown emoji. */
+  def makeForWelladjustedPeople[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
+      transactor: Transactor.Aux[F, DS],
+      dbInitScriptName: Option[String] = None,
+      customQuartzConfig: Map[String, String] = Map(),
+  )(action: A => F[Unit]): Resource[F, com.github.sideeffffect.quartz.SchedulerCustom[A, G]] =
+    `makeFor🤡s`(transactor, dbInitScriptName, customQuartzConfig)(action)
+
   def `makeFor🤡s`[A: Encoder: Decoder, DS <: DataSource, F[_]: Async, G[_]: Sync](
       transactor: Transactor.Aux[F, DS],
       dbInitScriptName: Option[String] = None,
