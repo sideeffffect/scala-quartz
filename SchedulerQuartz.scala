@@ -25,16 +25,20 @@ import scala.io.Source
 import scala.jdk.CollectionConverters._
 import scala.util.chaining._
 
-private class SchedulerQuartz[A: Encoder: Decoder, F[_]: MonadThrow, G[_]: Sync](
+class SchedulerQuartz[A: Encoder: Decoder, F[_]: MonadThrow, G[_]: Sync](
     underlying: org.quartz.Scheduler,
     action: A => F[Unit],
     dispatcher: Dispatcher[F],
 ) extends com.github.sideeffffect.quartz.SchedulerCustom[A, G]
     with Job {
 
+  def unsafeUnderlying: org.quartz.Scheduler = underlying
+
+  def executeAction(a: A): F[Unit] = action(a)
+
   def executeF(context: JobExecutionContext): F[Unit] = for {
     jobData <- decode[A](context.getJobDetail.getJobDataMap.getString(jobDataMapKey)).liftTo[F]
-    _ <- action(jobData)
+    _ <- executeAction(jobData)
   } yield ()
 
   override def execute(context: JobExecutionContext): Unit = dispatcher.unsafeRunAndForget(executeF(context))
